@@ -114,8 +114,7 @@ class PlayerFrameRequest(object):
         self.ojama = ojama
         self.event = event
 
-    def render(self):
-        result = "event={}, score={}, ojama={}\n".format(self.event.to_string(), self.score, self.ojama)
+    def get_kumi_xy(self):
         kumi_x = self.kumipuyo_x
         kumi_y = self.kumipuyo_y
         if self.kumipuyo_r == 0:
@@ -126,6 +125,21 @@ class PlayerFrameRequest(object):
             kumi_y += 1
         else:
             kumi_x -= 1
+        return kumi_x, kumi_y
+
+    def kumi_free(self):
+        index = self.kumipuyo_x + self.kumipuyo_y * WIDTH
+        if index >= len(self.field) or self.field[index]:
+            return False
+        kumi_x, kumi_y = self.get_kumi_xy()
+        index = kumi_x + kumi_y * WIDTH
+        if index >= len(self.field) or self.field[index]:
+            return False
+        return True
+
+    def render(self):
+        result = "event={}, score={}, ojama={}\n".format(self.event.to_string(), self.score, self.ojama)
+        kumi_x, kumi_y = self.get_kumi_xy()
         for i, puyo in enumerate([EMPTY] * WIDTH + self.field):
             x = i % WIDTH
             y = i / WIDTH
@@ -256,7 +270,7 @@ class FrameRequest(object):
         return self.__class__.from_string(self.to_string())
 
 class FrameResponse(object):
-    def __init__(self, id, x, r, pre_x, pre_r, message, mawashi_area):
+    def __init__(self, id=None, x=None, r=None, pre_x=None, pre_r=None, message=None, mawashi_area=None):
         self.id = id
         self.x = x
         self.r = r
@@ -266,6 +280,8 @@ class FrameResponse(object):
         self.mawashi_area = mawashi_area
 
     def to_blocks(self, deal):
+        if self.x is None:
+            return deal + [EMPTY] * (WIDTH - 2)
         blocks = [EMPTY] * (WIDTH * 3)
         blocks[self.x + WIDTH] = deal[0]
         if self.r == 0:
@@ -277,6 +293,25 @@ class FrameResponse(object):
         else:
             blocks[self.x - 1 + WIDTH] = deal[1]
         return blocks
+
+    @classmethod
+    def from_blocks(cls, blocks, deal):
+        for x in range(WIDTH):
+            for r in range(4):
+                candidate = cls(x=x, r=r)
+                b = candidate.to_blocks(deal)
+                if len(blocks) == 2 * WIDTH:
+                    if r == 0:
+                        b = b[:-WIDTH]
+                    else:
+                        b = b[WIDTH:]
+                elif len(blocks) == WIDTH:
+                    b = b[WIDTH:-WIDTH]
+                if b == blocks:
+                    return candidate
+        print deal, blocks, "Cannot resolve blocks :("
+        return cls(x=0, r=0)
+        # raise ValueError("Cannot resolve blocks")
 
     @classmethod
     def from_string(cls, payload):
@@ -307,42 +342,125 @@ class FrameResponse(object):
 class FrameInterpolator(object):
     def __init__(self):
         self.id = 0
+        self.last_frame = None
 
     def step(self, target):
-        frame = FrameRequest.from_json(target)
-        if self.id == 0:
-            self.id += 1
-            frame.id = self.id
-            for player in frame.players:
-                player.kumipuyos = [(EMPTY, EMPTY)] + player.kumipuyos[:-1]
-            yield frame.copy()
-
-            self.id += 1
-            frame.id = self.id
-            for player in frame.players:
-                player.event.next_appeared = True
-            yield frame.copy()
-
-            self.id += 1
-            frame.id = self.id
-            for player in frame.players:
-                player.event.next_appeared = False
-                player.kumipuyos = player.kumipuyos[1:]
-                player.event.grounded = True
-            yield frame.copy()
+        if self.last_frame is None:
+            for frame in self.first_frames(target):
+                yield frame
         else:
-            self.id += 1
-            frame.id = self.id
-            for player in frame.players:
-                player.event.next_appeared = True
-                player.event.grounded = True
-            yield frame.copy()
+            for frame in self.second_frames(target):
+                yield frame
+        self.last_frame = frame.copy()
+
+    def first_frames(self, target):
+        frame = FrameRequest.from_json(target)
+        self.id += 1
+        frame.id = self.id
+        for player in frame.players:
+            player.kumipuyos = [(EMPTY, EMPTY)] + player.kumipuyos[:-1]
+        yield frame.copy()
+
+        self.id += 1
+        frame.id = self.id
+        for player in frame.players:
+            player.event.next_appeared = True
+        yield frame.copy()
+
+        self.id += 1
+        frame.id = self.id
+        for player in frame.players:
+            player.event.next_appeared = False
+            player.event.grounded = True
+            player.kumipuyos = player.kumipuyos[1:]
+        yield frame.copy()
 
         self.id += 1
         frame.id = self.id
         for player in frame.players:
             player.event.next_appeared = False
             player.event.grounded = False
+            player.event.decicion_request = True
+        yield frame.copy()
+
+    def second_frames(self, target):
+        frame = self.last_frame.copy()
+        moves = [None, None]
+        ojamas_dropped = [False, False]
+        puyos_erased = [False, False]
+        for child in target["childStates"]:
+            index = 1 - (child["player"] == target["player"])
+            deal = frame.players[child["player"]].kumipuyos[0]
+            blocks = deal + [EMPTY] * (2 * WIDTH - 2)
+            for event in child["events"]:
+                if "blocks" in event:
+                    blocks = event["blocks"]
+            moves[index] = FrameResponse.from_blocks(blocks, deal)
+            for effect in child["effects"]:
+                if effect["type"] == "groupCleared":
+                    puyos_erased[index] = True
+                elif effect["type"] == "puyoDropped" and effect["color"] == OJAMA:
+                    ojamas_dropped[index] = True
+        for player, move in zip(frame.players, moves):
+            player.event.decicion_request = False
+            player.kumipuyo_x = move.x
+            player.kumipuyo_r = move.r
+
+        while True:
+            self.id += 1
+            frame.id = self.id
+            yield frame.copy()
+            done = 0
+            for player in frame.players:
+                player.kumipuyo_y += 1
+                if not player.kumi_free():
+                    player.kumipuyo_y -= 1
+                    done += 1
+            if done == 2:
+                break
+
+        self.id += 1
+        frame.id = self.id
+        for player, ojama_dropped in zip(frame.players, ojamas_dropped):
+            player.event.ojama_dropped = ojama_dropped
+        yield frame.copy()
+
+        # Next round
+
+        target_frame = FrameRequest.from_json(target)
+        frame = target_frame.copy()
+        self.id += 1
+        frame.id = self.id
+        for player in frame.players:
+            player.kumipuyos = player.kumipuyos[:-1]
+            player.event.grounded = True
+        yield frame.copy()
+
+        self.id += 1
+        frame.id = self.id
+        for player, puyo_erased in zip(frame.players, puyos_erased):
+            player.event.grounded = False
+            player.event.puyo_erased = puyo_erased
+        yield frame.copy()
+
+        self.id += 1
+        frame.id = self.id
+        for player in frame.players:
+            player.event.puyo_erased = False
+        yield frame.copy()
+
+        self.id += 1
+        frame = target_frame.copy()
+        frame.id = self.id
+        for player in frame.players:
+            player.event.next_appeared = True
+        yield frame.copy()
+
+        self.id += 1
+        frame.id = self.id
+        for player in frame.players:
+            player.event.grounded = False
+            player.event.next_appeared = False
             player.event.decicion_request = True
         yield frame.copy()
 
@@ -360,6 +478,9 @@ class Driver(object):
         header = self.process.stdout.read(struct.calcsize("I"))
         size = struct.unpack("I", header)[0]
         return self.process.stdout.read(size)
+
+    def kill(self):
+        self.process.kill()
 
 class FrameDriver(Driver):
     def __init__(self, executable):
@@ -407,7 +528,7 @@ def test_framerequest_parse():
     print f.to_string()
 
 def test_interpolation():
-    payload = '''{"time":0,"numColors":4,"numPlayers":2,"numDeals":3,"maxLosses":2,"width":6,"height":12,"childStates":[{"time":0,"totalScore":0,"chainScore":0,"dropScore":0,"leftoverScore":0,"chainNumber":0,"allClearBonus":false,"chainAllClearBonus":false,"pendingNuisance":0,"nuisanceX":0,"gameOvers":0,"width":6,"height":12,"ghostHeight":1,"targetScore":70,"clearThreshold":4,"blocks":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"effects":[],"player":0,"dealIndex":0},{"time":0,"totalScore":0,"chainScore":0,"dropScore":0,"leftoverScore":0,"chainNumber":0,"allClearBonus":false,"chainAllClearBonus":false,"pendingNuisance":0,"nuisanceX":0,"gameOvers":0,"width":6,"height":12,"ghostHeight":1,"targetScore":70,"clearThreshold":4,"blocks":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"effects":[],"player":1,"dealIndex":0}],"status":{"terminated":true,"result":"Timeout"},"deals":[[4,4],[1,3],[1,3]]}'''
+    payload = '''{"time":0, "player":0, "numColors":4,"numPlayers":2,"numDeals":3,"maxLosses":2,"width":6,"height":12,"childStates":[{"time":0,"totalScore":0,"chainScore":0,"dropScore":0,"leftoverScore":0,"chainNumber":0,"allClearBonus":false,"chainAllClearBonus":false,"pendingNuisance":0,"nuisanceX":0,"gameOvers":0,"width":6,"height":12,"ghostHeight":1,"targetScore":70,"clearThreshold":4,"blocks":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"effects":[],"player":0,"dealIndex":0},{"time":0,"totalScore":0,"chainScore":0,"dropScore":0,"leftoverScore":0,"chainNumber":0,"allClearBonus":false,"chainAllClearBonus":false,"pendingNuisance":0,"nuisanceX":0,"gameOvers":0,"width":6,"height":12,"ghostHeight":1,"targetScore":70,"clearThreshold":4,"blocks":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"effects":[],"player":1,"dealIndex":0}],"status":{"terminated":true,"result":"Timeout"},"deals":[[4,4],[1,3],[1,3]]}'''
     interpolator = FrameInterpolator()
     for frame in interpolator.step(json.loads(payload)):
         print frame.to_string()
@@ -423,6 +544,32 @@ def render_log(data):
             sleep(1)
         else:
             sleep(0.01)
+
+def render_panel_log(data):
+    for payload in data.split("\n"):
+        if not payload.strip():
+            continue
+        payload = json.loads(payload)
+        payload["player"] = 0
+        f = FrameRequest.from_json(payload)
+        print f.render()
+        sleep(0.01)
+
+def interpolate_panel_log(data):
+    interpolator = FrameInterpolator()
+    for payload in data.split("\n"):
+        if not payload.strip():
+            continue
+        payload = json.loads(payload)
+        payload["player"] = 0
+        for frame in interpolator.step(payload):
+            print frame.render()
+            sleep(0.001)
+
+# test_interpolation()
+
+# with open("/home/lumi/CPP/puyoai/logs/panel.log") as f:
+#     interpolate_panel_log(f.read())
 
 """
 driver = FrameDriver('/home/puyoai/puyoai/out/Default/cpu/test_lockit/niina')

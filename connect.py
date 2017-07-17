@@ -24,7 +24,7 @@ def main(command, url, autojoin=False):
         uuid = response.json()['id']
         restart = False
         try:
-            driver = FrameDriver('/home/puyoai/puyoai/out/Default/cpu/test_lockit/niina')  # TODO
+            driver = FrameDriver(command)
             while not restart:
                 sleep(0.2)
                 response = requests.get('{}/play/{}?poll=1'.format(url, uuid))
@@ -36,6 +36,7 @@ def main(command, url, autojoin=False):
                     break
                 if state.get('canPlay'):
                     deal = state["deals"][state["childStates"][state["player"]]["dealIndex"]]
+                    print ('playing piece', deal)
                     blocks = driver.play(state)
                     event = {
                         'type': 'addPuyos',
@@ -58,14 +59,15 @@ def main(command, url, autojoin=False):
                     if not response.json()['success']:
                         reason = response.json().get('reason', '')
                         raise ValueError('Cannot play a move because %s' % reason)
+            driver.kill()
         finally:
             response = requests.delete('{}/play/{}'.format(url, uuid))
             print (response.content)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Connection layer between a HTTP API and a binary socket')
-    parser.add_argument('command', metavar='command', type=str, help='Executable that calculates the next move')
+    parser = argparse.ArgumentParser(description='Connection layer between a HTTP API and a subprocess pipe')
+    parser.add_argument('command', metavar='command', type=str, help='Executable for the puyoai bot')
     parser.add_argument('url', metavar='url', type=str, help='API URL')
     parser.add_argument('--autojoin', action='store_true')
 
