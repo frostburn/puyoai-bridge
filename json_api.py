@@ -273,7 +273,7 @@ class FrameResponse(object):
         elif self.r == 1:
             blocks[self.x + 1 + WIDTH] = deal[1]
         elif self.r == 2:
-            blocks[self.r + 2 * WIDTH] = deal[1]
+            blocks[self.x + 2 * WIDTH] = deal[1]
         else:
             blocks[self.x - 1 + WIDTH] = deal[1]
         return blocks
@@ -304,7 +304,6 @@ class FrameResponse(object):
                 mawashi_area = value
         return cls(id, x, r, pre_x, pre_r, message, mawashi_area)
 
-# TODO: Fix bad blocks response during nuisance fall
 class FrameInterpolator(object):
     def __init__(self):
         self.id = 0
@@ -318,24 +317,31 @@ class FrameInterpolator(object):
                 player.kumipuyos = [(EMPTY, EMPTY)] + player.kumipuyos[:-1]
             yield frame.copy()
 
-        self.id += 1
-        frame.id = self.id
-        for player in frame.players:
-            player.event.next_appeared = True
-        yield frame.copy()
+            self.id += 1
+            frame.id = self.id
+            for player in frame.players:
+                player.event.next_appeared = True
+            yield frame.copy()
+
+            self.id += 1
+            frame.id = self.id
+            for player in frame.players:
+                player.event.next_appeared = False
+                player.kumipuyos = player.kumipuyos[1:]
+                player.event.grounded = True
+            yield frame.copy()
+        else:
+            self.id += 1
+            frame.id = self.id
+            for player in frame.players:
+                player.event.next_appeared = True
+                player.event.grounded = True
+            yield frame.copy()
 
         self.id += 1
         frame.id = self.id
         for player in frame.players:
             player.event.next_appeared = False
-            if player.kumipuyos[0][0] == EMPTY:
-                player.kumipuyos = player.kumipuyos[1:]
-            player.event.grounded = True
-        yield frame.copy()
-
-        self.id += 1
-        frame.id = self.id
-        for player in frame.players:
             player.event.grounded = False
             player.event.decicion_request = True
         yield frame.copy()
