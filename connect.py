@@ -1,8 +1,10 @@
+import os.path
 import requests
 import argparse
 from json_api import *
 
 def main(command, url, autojoin=False):
+    name = os.path.basename(command)
     mode = 'puyo:duel'
     if url.endswith('/'):
         url = url[:-1]
@@ -12,7 +14,7 @@ def main(command, url, autojoin=False):
             sleep(1)
         response = requests.get('{}/game/list?status=open&mode={}'.format(url, mode))
         payload = {
-            'metadata': {'name': 'puyoai'},
+            'metadata': {'name': 'puyoai-{}'.format(name)},
         }
         if (response.json()['games']) and autojoin:
             payload['id'] = response.json()['games'][0]['id']
