@@ -200,7 +200,7 @@ class PlayerFrameRequest(object):
     def from_json(cls, state, global_deals, num_deals):
         index = state["dealIndex"]
         deals = global_deals[index:index + num_deals]
-        return cls(state["blocks"], deals, state["totalScore"], 2, 1, 0, state["pendingNuisance"], UserEvent.from_string("-------"))
+        return cls(state["blocks"], deals, state["totalScore"], 2, 1, 0, state["incomingNuisance"], UserEvent.from_string("-------"))
 
 class FrameRequest(object):
     def __init__(self, id, players, game_result=None, match_end=None):
